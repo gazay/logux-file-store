@@ -18,17 +18,20 @@ var sizeof = require('object-sizeof')
  * })
  *
  * @class
- * @extends MemoryStore
  */
 
 function FileStore (opts) {
   this.memoryStore = new MemoryStore()
-  this.filesTable = { }
+  this.filesTable = {
+    lastAddedIndex: 0,
+    lastCreatedIndex: 0,
+  }
 
   if (!opts) opts = { }
 
   this.entriesLimit = opts.entriesLimit || 10000
   this.memoryLimit = opts.memoryLimit || 1048576 * 100 // 100MiB
+  this.filesPath = opts.path || '.'
   this.addedCount = 0
   this.addedMemory = 0
 }
@@ -41,21 +44,56 @@ FileStore.prototype = {
     return this.memoryStore.get(order)
   },
 
+  // Because in memory store two arrays we multiply object size by 2
   add: function add (entry) {
     if (this.addedCount === this.entriesLimit) {
-      this.flush()
+      return this.flush().then(() => {
+        this.addedCount += 1 * 2
+        this.addedMemory += sizeof(entry) * 2
+        return this.memoryStore.add(entry)
+      })
+    } else {
+      this.addedCount += 1 * 2
+      this.addedMemory += sizeof(entry) * 2
+      return this.memoryStore.add(entry)
     }
-    this.addedCount += 1
-    this.addedMemory += sizeof(entry)
-    return this.memoryStore.add(entry)
   },
 
   flush: function flush () {
-    // dump added and created to files
-    this.memoryStore.added = []
-    this.memoryStore.created = []
-    this.addedCount = 0
-    this.addedMemory = 0
+    return new Promise(resolve, reject) {
+      // Added first
+      var addedIndex = ++this.filesTable.lastAddedIndex
+      var addedPath = `${this.filesPath}/added_${fileIndex}.log`
+      var addedContent = this.memoryStore.added.map(entry => {
+        return JSON.stringify(entry)
+      }).join("\n")
+      fs.writeFile(addedPath, addedContent, function (err) {
+        if (err) {
+          reject(err)
+        } else {
+          this.memoryStore.added = []
+          this.addedMemory = this.addedMemory / 2
+          this.addedCount = this.addedCount / 2
+
+          var createdIndex = ++this.filesTable.lastCreatedIndex
+          var createdPath = `${this.filesPath}/created_${fileIndex}.log`
+          var createdContent = this.memoryStore.created.map(entry => {
+            return JSON.stringify(entry)
+          }).join("\n")
+
+          fs.writeFile(createdPath, createdContent, function (err) {
+            if (err) {
+              reject(err)
+            } else {
+              this.memoryStore.created = []
+              this.addedCount = 0
+              this.addedMemory = 0
+              resolve()
+            }
+          })
+        }
+      }
+    }
   },
 
   needFlush: function needFlush () {
